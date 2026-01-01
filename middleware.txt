@@ -1,0 +1,125 @@
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.Logging;
+using Microsoft.IdentityModel.Tokens;
+using System;
+using System.IdentityModel.Tokens.Jwt;
+using System.Text;
+using System.Threading.Tasks;
+
+public class TokenValidationMiddleware
+{
+    private readonly RequestDelegate _next;
+    private readonly ILogger<TokenValidationMiddleware> _logger;
+    private readonly string _secretKey = "SuperSecretKey12345"; // replace with secure key
+
+    public TokenValidationMiddleware(RequestDelegate next, ILogger<TokenValidationMiddleware> logger)
+    {
+        _next = next;
+        _logger = logger;
+    }
+
+    public async Task InvokeAsync(HttpContext context)
+    {
+        try
+        {
+            var authHeader = context.Request.Headers["Authorization"].ToString();
+
+            if (string.IsNullOrEmpty(authHeader) || !authHeader.StartsWith("Bearer "))
+            {
+                context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+                await context.Response.WriteAsync("{\"error\":\"Unauthorized: Missing or invalid token.\"}");
+                return;
+            }
+
+            var token = authHeader.Substring("Bearer ".Length).Trim();
+
+            var tokenHandler = new JwtSecurityTokenHandler();
+            var key = Encoding.UTF8.GetBytes(_secretKey);
+
+            tokenHandler.ValidateToken(token, new TokenValidationParameters
+            {
+                ValidateIssuer = false,
+                ValidateAudience = false,
+                ValidateLifetime = true,
+                ValidateIssuerSigningKey = true,
+                IssuerSigningKey = new SymmetricSecurityKey(key)
+            }, out _);
+
+            // If validation passes, continue down the pipeline
+            await _next(context);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Token validation failed.");
+            context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+            context.Response.ContentType = "application/json";
+            await context.Response.WriteAsync("{\"error\":\"Unauthorized: Invalid or expired token.\"}");
+        }
+    }
+}
+var builder = WebApplication.CreateBuilder(args);
+
+builder.Services.AddControllers();
+
+// Register authentication/authorization
+builder.Services.AddAuthentication("Bearer")
+    .AddJwtBearer("Bearer", options =>
+    {
+        options.TokenValidationParameters = new Microsoft.IdentityModel.Tokens.TokenValidationParameters
+        {
+            ValidateIssuer = false,
+            ValidateAudience = false,
+            ValidateLifetime = true,
+            ValidateIssuerSigningKey = true,
+            IssuerSigningKey = new Microsoft.IdentityModel.Tokens.SymmetricSecurityKey(
+                System.Text.Encoding.UTF8.GetBytes("SuperSecretKey12345"))
+        };
+    });
+
+builder.Services.AddAuthorization();
+
+// Register HTTP logging
+builder.Services.AddHttpLogging(logging =>
+{
+    logging.LoggingFields = Microsoft.AspNetCore.HttpLogging.HttpLoggingFields.All;
+});
+
+var app = builder.Build();
+
+// ✅ 1. Error-handling middleware first
+app.UseJsonExceptionHandling(); // custom middleware for consistent JSON errors
+
+// ✅ 2. Authentication middleware next
+app.UseAuthentication();
+app.UseAuthorization();
+
+// ✅ 3. Logging middleware last
+app.UseHttpLogging();
+
+app.UseRouting();
+app.MapControllers();
+
+app.Run();
+
+// Extension method for easy registration
+public static class TokenValidationMiddlewareExtensions
+{
+    public static IApplicationBuilder UseTokenValidation(this IApplicationBuilder builder)
+    {
+        return builder.UseMiddleware<TokenValidationMiddleware>();
+    }
+}
+var builder = WebApplication.CreateBuilder(args);
+
+builder.Services.AddControllers();
+var app = builder.Build();
+
+// Custom token validation middleware
+app.UseTokenValidation();
+
+app.UseRouting();
+app.UseAuthorization();
+
+app.MapControllers();
+app.Run();
